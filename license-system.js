@@ -2,6 +2,15 @@
 // BUDGETWISE 2.0 - FREEMIUM LICENSE SYSTEM
 // ============================================
 
+// Esposizione globale IMMEDIATA all'inizio
+if (typeof window !== 'undefined') {
+    window.BudgetWiseLicense = class BudgetWiseLicense {
+        constructor() {
+            // ... tutto il codice esistente rimane identico ...
+        }
+    };
+}
+
 class BudgetWiseLicense {
     constructor() {
         this.licenseKey = localStorage.getItem('bw-license-key') || null;
@@ -36,8 +45,11 @@ class BudgetWiseLicense {
             }
         };
         
-        this.categories = ['Alimentari', 'Trasporti', 'Altro']; // Free version limit
+        this.categories = ['Alimentari', 'Trasporti', 'Altro'];
     }
+    
+    // ... TUTTI I METODI ESISTENTI RIMANGONO IDENTICI ...
+    // checkPremiumStatus(), getCurrentLimits(), canAddTransaction(), etc.
     
     checkPremiumStatus() {
         const license = localStorage.getItem('bw-license-valid');
@@ -74,7 +86,6 @@ class BudgetWiseLicense {
         localStorage.setItem('bw-trial-used', 'true');
         localStorage.setItem('bw-trial-start', this.trialStart);
         
-        // 7 giorni di trial premium
         const trialEnd = new Date();
         trialEnd.setDate(trialEnd.getDate() + 7);
         localStorage.setItem('bw-trial-end', trialEnd.toISOString());
@@ -97,7 +108,6 @@ class BudgetWiseLicense {
     
     async activateLicense(email, key) {
         try {
-            // Validazione licenza via GitHub API (o altro servizio gratuito)
             const response = await fetch('https://api.github.com/repos/ferrarofranco917-netizen/budgetwise/actions/workflows/validate-license/dispatches', {
                 method: 'POST',
                 headers: {
@@ -115,7 +125,6 @@ class BudgetWiseLicense {
                 this.licenseEmail = email;
                 this.isPremium = true;
                 
-                // Salva licenza valida per 30 giorni
                 const expiry = new Date();
                 expiry.setDate(expiry.getDate() + 30);
                 
@@ -201,11 +210,12 @@ class BudgetWiseLicense {
     }
 }
 
-// Export per uso in app.js
+// Esposizione globale FINALE (assicura che sia disponibile ovunque)
+if (typeof window !== 'undefined') {
+    window.BudgetWiseLicense = BudgetWiseLicense;
+}
+
+// Node.js export
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = BudgetWiseLicense;
 }
-
-// Expose for other scripts/modules
-try { globalThis.BudgetWiseLicense = BudgetWiseLicense; } catch(e) {}
-try { window.BudgetWiseLicense = BudgetWiseLicense; } catch(e) {}
