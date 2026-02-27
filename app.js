@@ -1,48 +1,35 @@
 // ============================================
 // BUDGETWISE 2.0 - VERSIONE STABILE COMPLETA
 // ============================================
-// ============================================
-// FUNZIONE DI ATTESA PER LICENSE SYSTEM
-// ============================================
-function waitForLicenseSystem(callback, maxAttempts = 20) {
-    let attempts = 0;
-    console.log(`🔍 [Attesa] Ricerca di window.BudgetWiseLicense...`);
 
-    const checkInterval = setInterval(() => {
-        attempts++;
-        
-        if (typeof window.BudgetWiseLicense !== 'undefined' && window.BudgetWiseLicense) {
-            clearInterval(checkInterval);
-            console.log(`✅ [Trovato] License system disponibile dopo ${attempts} tentativi.`);
-            callback(window.BudgetWiseLicense);
-        } 
-        else if (attempts >= maxAttempts) {
-            clearInterval(checkInterval);
-            console.warn(`⚠️ [Non Trovato] License system non disponibile dopo ${maxAttempts} tentativi. Procedo con fallback.`);
-            callback(null);
-        }
-    }, 100);
+function bw_detectDelimiterFromSample(text) {
+  const sample = String(text).split("\n").slice(0, 40).join("\n");
+  const candidates = [",", ";", "\t", "|"];
+  let best = ",";
+  let bestScore = -1;
+  for (const d of candidates) {
+    const lines = sample.split("\n").filter(l => l.trim());
+    if (!lines.length) continue;
+    const counts = lines.map(l => bw_splitCsvLine(l, d).length);
+    const avg = counts.reduce((a,b)=>a+b,0) / counts.length;
+    const variance = counts.reduce((a,c)=>a + Math.abs(c-avg), 0) / counts.length;
+    const score = avg - variance * 0.5;
+    if (score > bestScore) { bestScore = score; best = d; }
+  }
+  return best;
 }
 
-// ============================================
-// CSV AUTO-DETECT (delimiter + header row) + safe splitting
-// ============================================
-
-function splitCsvLine(line, delimiter) {
-  // Minimal CSV splitter with quotes support (handles ; or , inside quotes)
+function bw_splitCsvLine(line, delimiter) {
+  const s = String(line ?? "");
   const out = [];
   let cur = "";
   let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
     if (ch === '"') {
-      // double quote escaping
-      if (inQuotes && line[i + 1] === '"') {
-        cur += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
+      // handle escaped quotes ""
+      if (inQuotes && s[i+1] === '"') { cur += '"'; i++; continue; }
+      inQuotes = !inQuotes;
       continue;
     }
     if (!inQuotes && ch === delimiter) {
@@ -53,67 +40,28 @@ function splitCsvLine(line, delimiter) {
     cur += ch;
   }
   out.push(cur);
-  return out;
+  return out.map(x => String(x).trim());
 }
 
-function detectDelimiterFromSample(text) {
-  const candidates = [',', ';', '\t', '|'];
-  const lines = String(text).split(/\r?\n/).slice(0, 20).filter(l => l && l.trim().length);
-  if (!lines.length) return ';';
-
-  let best = { delim: ';', score: -Infinity };
-
-  for (const delim of candidates) {
-    // Use median-ish column count stability as score
-    const counts = lines.map(l => splitCsvLine(l, delim).length).filter(n => n > 1);
-    if (!counts.length) continue;
-    counts.sort((a, b) => a - b);
-    const mid = counts[Math.floor(counts.length / 2)];
-    const variance = counts.reduce((s, n) => s + Math.abs(n - mid), 0) / counts.length;
-
-    // prefer higher columns and lower variance
-    const score = mid * 10 - variance;
-    if (score > best.score) best = { delim, score };
+function bw_findHeaderLineIndex(lines, delimiter) {
+  const maxScan = Math.min(lines.length, 80);
+  for (let i = 0; i < maxScan; i++) {
+    const line = String(lines[i] || "").trim();
+    if (!line) continue;
+    const cols = bw_splitCsvLine(line, delimiter);
+    const first = (cols[0] || "").toLowerCase();
+    if (
+      first.startsWith("conto") ||
+      first.startsWith("intestazione") ||
+      first.startsWith("periodo") ||
+      first.startsWith("saldo") ||
+      first.startsWith("nota")
+    ) continue;
+    if (cols.length >= 3 && bw_looksLikeHeaderLine(cols)) return i;
   }
-  return best.delim;
+  return -1;
 }
 
-function detectHeaderRowIndex(text, delimiter) {
-  const lines = String(text).split(/\r?\n/).slice(0, 60);
-  const keys = [
-    'data', 'date', 'descrizione', 'causale', 'importo', 'amount',
-    'entrate', 'accrediti', 'uscite', 'addebiti',
-    'descrizione completa', 'descrizione_completa', 'moneymap', 'categoria', 'category'
-  ];
-
-  let bestIdx = 0;
-  let bestScore = -1;
-
-  for (let i = 0; i < lines.length; i++) {
-    const raw = (lines[i] || '').trim();
-    if (!raw) continue;
-
-    // ignore "guide" / titles / single-cell lines
-    const parts = splitCsvLine(raw, delimiter).map(s => String(s || '').trim().toLowerCase());
-    if (parts.length < 2) continue;
-
-    let score = 0;
-    for (const p of parts) {
-      for (const k of keys) if (p.includes(k)) score += 2;
-      if (p === 'data' || p === 'date') score += 3;
-      if (p.includes('importo') || p === 'amount') score += 3;
-    }
-
-    // prefer rows with multiple known headers
-    if (score > bestScore) {
-      bestScore = score;
-      bestIdx = i;
-    }
-  }
-
-  // If score is too low, fallback to first non-empty row
-  return bestScore >= 4 ? bestIdx : 0;
-}
 
 class BudgetWise {
     constructor() {
@@ -206,6 +154,9 @@ class BudgetWise {
                 endDateLabel: 'Data scadenza (fine)',
                 percentLabel: 'Percentuale su entrate (%)',
                 goalLabel: 'Obiettivo (€)',
+                initialFundLabel: 'Fondo iniziale (€)',
+                applySuggestion: 'Applica suggerimento',
+                suggestionMessage: 'Aumenta al <strong>15%</strong> per arrivare <strong>3 mesi prima</strong>!',
                 thresholdLabel: '🔔 Soglia avviso (€)',
                 languageLabel: '🌍 Lingua',
                 backupLabel: '📅 Backup dati',
@@ -375,6 +326,35 @@ class BudgetWise {
                 defaultCategoriesTitle: 'Categorie predefinite',
                 yourCategoriesTitle: 'Le tue categorie',
                 close: 'Chiudi',
+                savingsPlanLabel: 'Piano risparmi',
+                endOfPeriod: 'Fine periodo',
+                noFixedPeriod: 'Nessuna spesa fissa nel periodo',
+                colorsTitle: '🎨 Personalizza colori',
+                colorsSubtitle: "Scegli i tuoi colori preferiti per l'app. Le modifiche sono immediate.",
+                colorAccentLabel: 'Colore principale (accento)',
+                colorAccentLightLabel: 'Colore secondario (accent-light)',
+                colorCardBgLabel: 'Sfondo card',
+                colorTextPrimaryLabel: 'Testo primario',
+                colorTextSecondaryLabel: 'Testo secondario',
+                colorBgLabel: 'Sfondo generale',
+                colorSuccessLabel: 'Successo (entrate)',
+                colorDangerLabel: 'Pericolo (spese)',
+                colorWarningLabel: 'Avviso',
+                colorBorderLabel: 'Bordi',
+                savingsWidgetTitle: 'Raggiungerai il tuo obiettivo',
+                currentPlanTitle: '📅 Piano attuale',
+                suggestionTitle: '💡 Suggerimento',
+                csvChooseFileLabel: 'Scegli file CSV o Excel',
+                noFileSelected: 'Nessun file selezionato',
+                importAdvanced: '⚙️ Opzioni avanzate',
+                hideOptions: '✕ Nascondi opzioni',
+                dateFormat: 'Formato data',
+                separator: 'Separatore',
+                excelSheet: 'Foglio Excel',
+                excelHeaderRow: 'Riga intestazione',
+                excelAuto: 'Nessuna (auto)',
+                excelHelp: '📌 I file Excel vengono convertiti automaticamente',
+                preview: 'Anteprima',
             },
             en: {
                 resetColors: 'Reset default colors',
@@ -416,6 +396,9 @@ class BudgetWise {
                 endDateLabel: 'Expiry date',
                 percentLabel: 'Percentage of income (%)',
                 goalLabel: 'Goal (€)',
+                initialFundLabel: 'Initial fund (€)',
+                applySuggestion: 'Apply suggestion',
+                suggestionMessage: 'Increase to <strong>15%</strong> to reach it <strong>3 months earlier</strong>!',
                 thresholdLabel: '🔔 Alert threshold (€)',
                 languageLabel: '🌍 Language',
                 backupLabel: '📅 Data backup',
@@ -585,6 +568,35 @@ class BudgetWise {
                 defaultCategoriesTitle: 'Default categories',
                 yourCategoriesTitle: 'Your categories',
                 close: 'Close',
+                savingsPlanLabel: 'Savings plan',
+                endOfPeriod: 'End of period',
+                noFixedPeriod: 'No fixed expenses in the period',
+                colorsTitle: '🎨 Customize colors',
+                colorsSubtitle: 'Choose your favorite colors for the app. Changes apply immediately.',
+                colorAccentLabel: 'Primary color (accent)',
+                colorAccentLightLabel: 'Secondary color (accent-light)',
+                colorCardBgLabel: 'Card background',
+                colorTextPrimaryLabel: 'Primary text',
+                colorTextSecondaryLabel: 'Secondary text',
+                colorBgLabel: 'App background',
+                colorSuccessLabel: 'Success (income)',
+                colorDangerLabel: 'Danger (expenses)',
+                colorWarningLabel: 'Warning',
+                colorBorderLabel: 'Borders',
+                savingsWidgetTitle: 'You will reach your goal',
+                currentPlanTitle: '📅 Current plan',
+                suggestionTitle: '💡 Suggestion',
+                csvChooseFileLabel: 'Choose CSV or Excel file',
+                noFileSelected: 'No file selected',
+                importAdvanced: '⚙️ Advanced options',
+                hideOptions: '✕ Hide options',
+                dateFormat: 'Date format',
+                separator: 'Separator',
+                excelSheet: 'Excel sheet',
+                excelHeaderRow: 'Header row',
+                excelAuto: 'None (auto)',
+                excelHelp: '📌 Excel files are converted automatically',
+                preview: 'Preview',
             },
             es: {
                 resetColors: 'Restablecer colores predeterminados',
@@ -826,6 +838,9 @@ class BudgetWise {
                 endDateLabel: 'Date d’échéance',
                 percentLabel: 'Pourcentage des revenus (%)',
                 goalLabel: 'Objectif (€)',
+                initialFundLabel: 'Fonds initial (€)',
+                applySuggestion: 'Appliquer la suggestion',
+                suggestionMessage: 'Augmente à <strong>15%</strong> pour y arriver <strong>3 mois plus tôt</strong>!',
                 thresholdLabel: '🔔 Seuil d’alerte (€)',
                 languageLabel: '🌍 Langue',
                 backupLabel: '📅 Sauvegarde des données',
@@ -984,7 +999,36 @@ class BudgetWise {
                 csvMappingInstructionsHtml: '<strong>📌 Instructions :</strong> Associe chaque colonne du CSV au bon champ. Montants positifs = <strong>revenus</strong>, négatifs = <strong>dépenses</strong>.',
                 csvMappingFieldsTitle: '🎯 Association des champs :',
                 showAllExpenses: 'Afficher toutes les dépenses de la période',
-                edit: 'Modifier'
+                edit: 'Modifier',
+                savingsPlanLabel: 'Plan épargne',
+                endOfPeriod: 'Fin de période',
+                noFixedPeriod: 'Aucune dépense fixe sur la période',
+                colorsTitle: '🎨 Personnaliser les couleurs',
+                colorsSubtitle: "Choisissez vos couleurs préférées pour l'app. Les changements sont immédiats.",
+                colorAccentLabel: 'Couleur principale (accent)',
+                colorAccentLightLabel: 'Couleur secondaire (accent clair)',
+                colorCardBgLabel: 'Fond des cartes',
+                colorTextPrimaryLabel: 'Texte principal',
+                colorTextSecondaryLabel: 'Texte secondaire',
+                colorBgLabel: 'Fond général',
+                colorSuccessLabel: 'Succès (revenus)',
+                colorDangerLabel: 'Danger (dépenses)',
+                colorWarningLabel: 'Alerte',
+                colorBorderLabel: 'Bordures',
+                savingsWidgetTitle: 'Vous atteindrez votre objectif',
+                currentPlanTitle: '📅 Plan actuel',
+                suggestionTitle: '💡 Suggestion',
+                csvChooseFileLabel: 'Choisir un fichier CSV ou Excel',
+                noFileSelected: 'Aucun fichier sélectionné',
+                importAdvanced: '⚙️ Options avancées',
+                hideOptions: '✕ Masquer les options',
+                dateFormat: 'Format de date',
+                separator: 'Séparateur',
+                excelSheet: 'Feuille Excel',
+                excelHeaderRow: "Ligne d'en-tête",
+                excelAuto: 'Aucune (auto)',
+                excelHelp: '📌 Les fichiers Excel sont convertis automatiquement',
+                preview: 'Aperçu',
             }
         };
         
@@ -1019,14 +1063,10 @@ class BudgetWise {
     }
 
     init() {
-    // ========== CARICAMENTO DATI ==========
-    this.loadData();
-    
-    // ========== INIZIALIZZAZIONE SISTEMA LICENZE (ASINCRONA) ==========
-    this.initializeLicenseSystem();
-    
-    // ========== SETUP UI (indipendente dalla licenza) ==========
-    this.setupEventListeners();
+        // ========== INIZIALIZZAZIONE SISTEMA LICENZE ==========
+        this.initializeLicenseSystem();
+        
+        this.loadData();
         this.setupEventListeners();
         this.applyTheme();
         // NOTE: custom colors should NOT override theme defaults unless the user explicitly saved them.
@@ -1379,7 +1419,9 @@ class BudgetWise {
         document.getElementById('backupBtn').innerHTML = this.t('backup');
         document.getElementById('restoreBtn').innerHTML = this.t('restore');
 
-        const loadDemoBtn = document.getElementById('loadDemoBtn');
+        const resetColorsBtn = document.getElementById('resetColorsBtn');
+        if (resetColorsBtn) resetColorsBtn.textContent = this.t('resetColors');
+const loadDemoBtn = document.getElementById('loadDemoBtn');
         if (loadDemoBtn) loadDemoBtn.textContent = this.t('loadDemoBtn');
         document.getElementById('resetAllBtn').innerHTML = this.t('resetAll');
         document.getElementById('exportCalendarBtn').textContent = this.t('export');
@@ -1411,13 +1453,35 @@ class BudgetWise {
         
         document.getElementById('chartNote').textContent = this.t('chartNote');
         
-        const percentLabel = document.querySelector('.input-group label[for="savePercent"]');
-        if (percentLabel) percentLabel.textContent = this.t('percentLabel');
-        
-        const goalLabel = document.querySelector('.input-group label[for="saveGoal"]');
-        if (goalLabel) goalLabel.textContent = this.t('goalLabel');
-        
-        const settingLabels = document.querySelectorAll('.setting-item label');
+        // ===== Savings goal section labels (robust, preserves inner spans) =====
+        const percentLbl = document.getElementById('percentLabel');
+        if (percentLbl) {
+            const pctSpan = percentLbl.querySelector('#percentageValue');
+            const pctHtml = pctSpan ? pctSpan.outerHTML : '<span class="percentage-value" id="percentageValue"></span>';
+            // Keep the live percentage value span
+            percentLbl.innerHTML = `${this.t('percentLabel')}: ${pctHtml}`;
+        }
+
+        const goalLbl = document.getElementById('goalLabel');
+        if (goalLbl) goalLbl.textContent = this.t('goalLabel');
+
+        const potLbl = document.getElementById('savingsPotInputLabel');
+        if (potLbl) potLbl.textContent = this.t('initialFundLabel');
+
+        const currentPlanTitle = document.getElementById('currentPlanTitle');
+        if (currentPlanTitle) currentPlanTitle.textContent = this.t('currentPlanTitle');
+
+        const suggestionTitle = document.getElementById('suggestionTitle');
+        if (suggestionTitle) suggestionTitle.textContent = this.t('suggestionTitle');
+
+        const applySuggestionBtn = document.getElementById('applySuggestionBtn');
+        if (applySuggestionBtn) applySuggestionBtn.textContent = this.t('applySuggestion');
+
+        const suggestionMessage = document.getElementById('suggestionMessage');
+        if (suggestionMessage && this.translations?.[this.data.language]?.suggestionMessage) {
+            suggestionMessage.innerHTML = this.t('suggestionMessage');
+        }
+const settingLabels = document.querySelectorAll('.setting-item label');
         if (settingLabels.length >= 3) {
             settingLabels[0].innerHTML = this.t('thresholdLabel');
             settingLabels[1].innerHTML = this.t('languageLabel');
@@ -1609,8 +1673,65 @@ class BudgetWise {
         if (catOverlayOpen && catOverlayOpen.style.display === 'flex') this.refreshCategoryList();
 
         this.updatePeriodInfo();
+        this.applyStaticTranslations();
+        this.updateAllCategorySelects();
+
     }
 
+
+    applyStaticTranslations() {
+        const setText = (id, key) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = this.t(key);
+        };
+
+        // Home
+        setText('savingsPotLabel', 'savingsPlanLabel');
+        setText('noFixedPeriodText', 'noFixedPeriod');
+
+        // Tools - Import
+        setText('csvTitle', 'csvTitle');
+        setText('csvSubtitle', 'csvSubtitle');
+        setText('csvChooseFileLabel', 'csvChooseFileLabel');
+
+        const fileName = document.getElementById('csvFileName');
+        if (fileName && (fileName.textContent || '').trim().toLowerCase() === 'nessun file selezionato') {
+            fileName.textContent = this.t('noFileSelected');
+        }
+
+        const advWrap = document.getElementById('importAdvanced');
+        const advToggle = document.getElementById('importAdvancedToggle');
+        if (advToggle && advWrap) {
+            const isOpen = advWrap.style.display !== 'none' && advWrap.style.display !== '';
+            advToggle.textContent = isOpen ? this.t('hideOptions') : this.t('importAdvanced');
+        }
+
+        setText('csvDateFormatLabel', 'dateFormat');
+        setText('csvSeparatorLabel', 'separator');
+        setText('excelSheetLabel', 'excelSheet');
+        setText('excelHeaderLabel', 'excelHeaderRow');
+        setText('csvPreviewTitle', 'preview');
+        setText('excelHelp', 'excelHelp');
+
+        // Tools - Colors
+        setText('colorsTitle', 'colorsTitle');
+        setText('colorsSubtitle', 'colorsSubtitle');
+        setText('colorAccentLabel', 'colorAccentLabel');
+        setText('colorAccentLightLabel', 'colorAccentLightLabel');
+        setText('colorCardBgLabel', 'colorCardBgLabel');
+        setText('colorTextPrimaryLabel', 'colorTextPrimaryLabel');
+        setText('colorTextSecondaryLabel', 'colorTextSecondaryLabel');
+        setText('colorBgLabel', 'colorBgLabel');
+        setText('colorSuccessLabel', 'colorSuccessLabel');
+        setText('colorDangerLabel', 'colorDangerLabel');
+        setText('colorWarningLabel', 'colorWarningLabel');
+        setText('colorBorderLabel', 'colorBorderLabel');
+
+        // Savings widget
+        setText('savingsWidgetTitle', 'savingsWidgetTitle');
+        setText('currentPlanTitle', 'currentPlanTitle');
+        setText('suggestionTitle', 'suggestionTitle');
+    }
     initTabs() {
         const tabs = document.querySelectorAll('.tab-btn');
         const sections = document.querySelectorAll('.section-card[data-tab]');
@@ -1943,7 +2064,7 @@ updateFixedStatusHome() {
 
     const occs = this.getFixedOccurrencesInPeriod();
     if (!occs || occs.length === 0) {
-        listEl.innerHTML = `<p class="chart-note">Nessuna spesa fissa nel periodo</p>`;
+        listEl.innerHTML = `<p class="chart-note">${this.t('noFixedPeriod')}</p>`;
         return;
     }
 
@@ -2530,7 +2651,7 @@ updateFixedStatusHome() {
         const potEl = document.getElementById('savingsPot');
         const projEl = document.getElementById('savingsProjected');
         if (potEl) potEl.textContent = this.formatCurrency(this.data.savingsPot || 0);
-        if (projEl) projEl.textContent = `Fine periodo: ${this.formatCurrency(this.calculateProjectedSavingsEnd())}`;
+        if (projEl) projEl.textContent = `${this.t('endOfPeriod')}: ${this.formatCurrency(this.calculateProjectedSavingsEnd())}`;
 
 
         const remainingStatus = document.getElementById('remainingStatus');
@@ -3590,7 +3711,7 @@ document.documentElement.style.setProperty('--accent-gradient',
     updateAllCategorySelects() {
         const categories = this.getAllCategories();
         const optionsHtml = categories.map(cat => 
-            `<option value="${cat}">${this.getCategoryEmoji(cat)} ${cat}</option>`
+            `<option value="${cat}">${this.getCategoryEmoji(cat)} ${this.translateCategoryName(cat)}</option>`
         ).join('');
         
         const mainSelect = document.getElementById('expenseCategory');
@@ -3611,12 +3732,86 @@ document.documentElement.style.setProperty('--accent-gradient',
         return emojiMap[category] || '📌';
     }
 
+    translateCategoryName(category) {
+        const lang = this.data?.language || 'it';
+        const map = {
+            it: {
+                'Alimentari':'Alimentari','Trasporti':'Trasporti','Altro':'Altro','Casa':'Casa','Svago':'Svago','Salute':'Salute','Abbigliamento':'Abbigliamento'
+            },
+            en: {
+                'Alimentari':'Groceries','Trasporti':'Transport','Altro':'Other','Casa':'Home','Svago':'Leisure','Salute':'Health','Abbigliamento':'Clothing'
+            },
+            es: {
+                'Alimentari':'Alimentación','Trasporti':'Transporte','Altro':'Otros','Casa':'Hogar','Svago':'Ocio','Salute':'Salud','Abbigliamento':'Ropa'
+            },
+            fr: {
+                'Alimentari':'Courses','Trasporti':'Transport','Altro':'Autre','Casa':'Maison','Svago':'Loisirs','Salute':'Santé','Abbigliamento':'Vêtements'
+            }
+        };
+        return (map[lang] && map[lang][category]) ? map[lang][category] : category;
+    }
+
+
     // ========== REVISIONE IMPORT CSV ==========
     showImportReview(importedExpenses) {
         return new Promise((resolve) => {
             const overlay = document.getElementById('importReviewOverlay');
             const listEl = document.getElementById('importReviewList');
             
+
+            // Helper: le option dei select tengono VALUE canonico (italiano),
+            // ma LABEL tradotta. Se un import/dato arriva già tradotto, lo rimappiamo.
+            const normalizeCategoryValue = (cat) => {
+                if (!cat) return 'Altro';
+                const all = this.getAllCategories ? this.getAllCategories() : [];
+                if (all.includes(cat)) return cat;
+
+                // prova reverse map sui default noti
+                const known = ['Alimentari','Trasporti','Altro','Casa','Svago','Salute','Abbigliamento'];
+                for (const k of known) {
+                    if (this.translateCategoryName(k) === cat) return k;
+                }
+                return cat;
+            };
+
+            // ✅ handler "➕ Nuova categoria..." (si attacca subito al select)
+            const attachNewCategoryHandler = (selectEl, expRef) => {
+                if (!selectEl) return;
+
+                selectEl.addEventListener('change', () => {
+                    if (selectEl.value !== "__new__") {
+                        expRef.category = normalizeCategoryValue(selectEl.value);
+                        return;
+                    }
+
+                    const created = prompt(this.data.language === 'it' ? "Nome nuova categoria:" : "New category name:");
+                    if (!created || !created.trim()) {
+                        selectEl.value = normalizeCategoryValue(expRef.category || 'Altro');
+                        return;
+                    }
+
+                    const newCat = created.trim();
+
+                    // salva la categoria tra le custom (se non esiste)
+                    if (typeof this.getAllCategories === "function" && !this.getAllCategories().includes(newCat)) {
+                        if (!this.customCategories) this.customCategories = [];
+                        this.customCategories.push(newCat);
+                        if (typeof this.saveCustomCategories === "function") this.saveCustomCategories();
+                    }
+
+                    // aggiungi option nel select corrente e selezionala (prima di __new__)
+                    const opt = document.createElement("option");
+                    opt.value = newCat;
+                    opt.textContent = newCat;
+
+                    const newOpt = selectEl.querySelector('option[value="__new__"]');
+                    if (newOpt) selectEl.insertBefore(opt, newOpt);
+                    else selectEl.appendChild(opt);
+
+                    selectEl.value = newCat;
+                    expRef.category = newCat;
+                });
+            };
             if (!overlay || !listEl) {
                 resolve(importedExpenses);
                 return;
@@ -3624,7 +3819,7 @@ document.documentElement.style.setProperty('--accent-gradient',
             
             const categories = this.getAllCategories();
             const options = categories.map(cat => 
-                `<option value="${cat}">${this.getCategoryEmoji(cat)} ${cat}</option>`
+                `<option value="${cat}">${this.getCategoryEmoji(cat)} ${this.translateCategoryName(cat)}</option>`
             ).join('');
             
             listEl.innerHTML = importedExpenses.map((exp, index) => {
@@ -3651,7 +3846,9 @@ document.documentElement.style.setProperty('--accent-gradient',
             importedExpenses.forEach((exp, index) => {
                 const select = document.querySelector(`.review-select[data-index="${index}"]`);
                 if (select) {
-                    select.value = exp.category;
+                    exp.category = normalizeCategoryValue(exp.category);
+                    select.value = normalizeCategoryValue(exp.category);
+                    attachNewCategoryHandler(select, exp);
                 }
             });
             
@@ -3661,7 +3858,6 @@ document.documentElement.style.setProperty('--accent-gradient',
             const cancelBtn = document.getElementById('cancelImportBtn');
             
             const onConfirm = () => {
-                const selects = document.querySelectorAll('.review-select');
                 selects.forEach(select => {
                     const index = select.dataset.index;
                     const newCategory = select.value;
@@ -3830,14 +4026,113 @@ document.documentElement.style.setProperty('--accent-gradient',
     }
 
     // ========== IMPORT CSV CON MAPPATURA E REVISIONE ==========
+	// ✅ Auto-detect intestazione CSV (Fineco & simili): trova la riga con Data/Descrizione/Importo ecc.
+async autoDetectCsvLayout(file) {
+  try {
+    const rawText = await file.text();
+    const lines = String(rawText).split(/\r?\n/);
+
+    const candidates = [';', ',', '\t', '|'];
+    const headerKeywords = [
+      'data', 'date', 'data_oper', 'data oper', 'data operazione',
+      'descrizione', 'description', 'causale', 'descrizione completa', 'descrizione_completa',
+      'importo', 'amount', 'entrate', 'uscite', 'addebiti', 'accrediti',
+      'categoria', 'category', 'moneymap'
+    ];
+
+    const normalize = (s) => String(s ?? '')
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, ' ')
+      .replace(/[^\w\s]/g, '_');
+
+    let best = { score: -1, idx: 0, delim: ';' };
+
+    const maxScan = Math.min(lines.length, 80);
+
+    for (const delim of candidates) {
+      for (let i = 0; i < maxScan; i++) {
+        const line = lines[i];
+        if (!line || !line.trim()) continue;
+
+        // Evita righe chiaramente “note” / “saldo” / “conto”
+        const low = line.toLowerCase();
+        if (low.includes('conto corrente') || low.includes('saldo') || low.startsWith('nota:') || low.includes('periodo dal')) {
+          continue;
+        }
+
+        const cells = line.split(delim).map(x => normalize(x));
+        if (cells.length < 3) continue;
+
+        // Score: quante keyword header troviamo nelle celle
+        let score = 0;
+        for (const c of cells) {
+          for (const kw of headerKeywords) {
+            if (c.includes(kw)) score++;
+          }
+        }
+
+        // Bonus se contiene pattern tipici (data + descrizione)
+        const hasDate = cells.some(c => c.includes('data'));
+        const hasDesc = cells.some(c => c.includes('descriz') || c.includes('causale') || c.includes('description'));
+        if (hasDate) score += 2;
+        if (hasDesc) score += 2;
+
+        if (score > best.score) best = { score, idx: i, delim };
+      }
+    }
+
+    // Soglia minima: se score basso, non forziamo nulla
+    if (best.score < 3) return null;
+
+    return { delimiter: best.delim, skipRows: best.idx, headerRow: 1 };
+  } catch {
+    return null;
+  }
+}
     async parseCSV(file, delimiter, dateFormat, skipRows = 0, headerRow = 1) {
         console.log('📥 Inizio import CSV:', file.name, 'delimiter:', delimiter, 'dateFormat:', dateFormat, 'skipRows:', skipRows, 'headerRow:', headerRow);
 
-        const mapping = await this.showMappingDialog(file, delimiter, skipRows, headerRow);
-        if (!mapping) {
-            alert(this.t('importCancelled'));
-            return { cancelled: true, added: 0, incomes: 0 };
+        // ✅ Auto-detect: se l'utente non ha impostato skipRows manualmente, prova a trovare delimiter e intestazione reale
+        if (skipRows === 0) {
+            try {
+                const rawText = await file.text();
+                const lines = String(rawText).split('\n').filter(line => line.trim() !== '');
+                const delimAuto = bw_detectDelimiterFromSample(rawText);
+                const headerIdx = bw_findHeaderLineIndex(lines, delimAuto);
+
+                if (headerIdx !== -1) {
+                    console.log('🧠 Auto-header CSV:', { delimAuto: delimAuto === '	' ? 'TAB' : delimAuto, headerIdx, headerLine: lines[headerIdx] });
+                    delimiter = delimAuto;
+                    skipRows = headerIdx;
+                    headerRow = 1; // usa la riga trovata come header
+                }
+            } catch (e) {
+                console.warn('Auto-detect CSV fallito, uso mapping manuale:', e);
+            }
         }
+
+        // ✅ Auto-detect intestazione solo se l’utente non ha impostato manualmente valori diversi
+let usedDelimiter = delimiter;
+let usedSkip = skipRows;
+let usedHeaderRow = headerRow;
+
+if ((skipRows === 0 && headerRow === 1) || headerRow === 0) {
+  const auto = await this.autoDetectCsvLayout(file);
+  if (auto) {
+    usedDelimiter = auto.delimiter;
+    usedSkip = auto.skipRows;
+    usedHeaderRow = auto.headerRow;
+    console.log('🧠 Auto CSV layout:', auto);
+  }
+}
+
+// ✅ Auto-detect intestazione solo se l'utente non ha impostato manualmente valori diversi
+usedDelimiter = delimiter;
+usedSkip = skipRows;
+usedHeaderRow = headerRow;
+
+const mapping = await this.showMappingDialog(file, usedDelimiter, usedSkip, usedHeaderRow);
 
         return await new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -3864,7 +4159,7 @@ document.documentElement.style.setProperty('--accent-gradient',
                         const line = lines[i].trim();
                         if (!line) continue;
 
-                        const parts = splitCsvLine(line, delimiter);
+                        const parts = bw_splitCsvLine(line, delimiter);
                         if (parts.length <= Math.max(mapping.dateCol, mapping.descCol, mapping.amountCol)) continue;
 
                         let dateStr = parts[mapping.dateCol] ? parts[mapping.dateCol].trim() : '';
@@ -4690,8 +4985,15 @@ document.documentElement.style.setProperty('--accent-gradient',
 // INIZIALIZZAZIONE
 // ============================================
 
-const app = new BudgetWise();
-window.app = app;
+// ============================
+// INIZIALIZZAZIONE (SINGOLA ISTANZA)
+// ============================
+if (!window.app) {
+    window.app = new BudgetWise();
+} else {
+    console.warn("⚠️ BudgetWise già inizializzata: evito doppia istanza");
+}
+const app = window.app;
 
 // ============================================
 // ============================================
@@ -4721,7 +5023,7 @@ setTimeout(function() {
         advancedToggle.addEventListener('click', () => {
             const isOpen = advancedWrap.style.display !== 'none';
             advancedWrap.style.display = isOpen ? 'none' : 'block';
-            advancedToggle.textContent = isOpen ? '⚙️ Opzioni avanzate' : '✕ Nascondi opzioni';
+            advancedToggle.textContent = isOpen ? (window.app?.t ? window.app.t('importAdvanced') : '⚙️ Opzioni avanzate') : (window.app?.t ? window.app.t('hideOptions') : '✕ Nascondi opzioni');
         });
     }
 
@@ -4784,39 +5086,8 @@ fileInput.addEventListener('change', async function(e) {
             } catch (error) {
                 alert('❌ Errore nella lettura del file Excel: ' + error.message);
             }
-        
         } else {
-            // CSV: auto-detect delimiter + header row (e.g., Fineco "GUIDA" lines)
-            try {
-                const csvSep = document.getElementById('csvSeparator');
-                const csvDateFmt = document.getElementById('csvDelimiter'); // (yes, id is weird in UI)
-                const readerTxt = new FileReader();
-                readerTxt.onload = (ev) => {
-                    try {
-                        const sample = String(ev.target.result || '');
-                        const delim = detectDelimiterFromSample(sample);
-                        const headerIdx = detectHeaderRowIndex(sample, delim);
-
-                        // Set UI defaults to the detected values
-                        if (csvSep) csvSep.value = delim === '\t' ? 'TAB' : delim; // if your UI uses "TAB"
-                        if (skipRowsInput) skipRowsInput.value = String(headerIdx);
-                        if (headerRowInput) headerRowInput.value = '1';
-
-                        // Heuristic for Italian bank CSV: usually DD/MM/YYYY
-                        if (csvDateFmt && !csvDateFmt.value) csvDateFmt.value = 'DD/MM/YYYY';
-
-                        console.log('🏦 CSV auto-detect:', { delimiter: delim, headerRowIndex: headerIdx });
-                    } catch (e2) {
-                        console.warn('⚠️ CSV auto-detect failed:', e2);
-                    }
-                };
-                readerTxt.readAsText(file.slice(0, 120000)); // first 120KB is enough
-            } catch (e1) {
-                console.warn('⚠️ CSV auto-detect init failed:', e1);
-            }
-
             // CSV: reset selettore fogli
-
             if (sheetSelect) {
                 sheetSelect.innerHTML = '<option value="">Carica un file Excel</option>';
                 sheetSelect.disabled = true;
@@ -4899,7 +5170,7 @@ fileInput.addEventListener('change', async function(e) {
     // ========== METODI PREMIUM ==========
     this.updateLicenseStatus = () => {
         if (!this.license) {
-            console.warn('⚠️ License system non disponibile');
+            return; // license not ready
             return;
         }
         
@@ -4952,7 +5223,7 @@ fileInput.addEventListener('change', async function(e) {
 
     this.showPremiumBannerIfNeeded = () => {
         if (!this.license) {
-            console.warn('⚠️ License system non disponibile - banner non mostrato');
+            return; // license not ready
             return;
         }
         
@@ -5092,7 +5363,7 @@ fileInput.addEventListener('change', async function(e) {
 
     this.showPremiumBannerIfNeeded = () => {
         if (!this.license) {
-            console.warn('⚠️ License system non disponibile - banner non mostrato');
+            return; // license not ready
             return;
         }
         
@@ -5148,11 +5419,3 @@ fileInput.addEventListener('change', async function(e) {
     
 }, 2000);
 
-// ============================================
-// INIZIALIZZAZIONE (ANTI-DOPPIO CARICAMENTO)
-// ============================================
-if (!window.app) {
-    window.app = new BudgetWise();
-} else {
-    console.warn("⚠️ BudgetWise già inizializzata: evito doppia istanza");
-}
