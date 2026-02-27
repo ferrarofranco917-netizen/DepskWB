@@ -1,7 +1,28 @@
 // ============================================
 // BUDGETWISE 2.0 - VERSIONE STABILE COMPLETA
 // ============================================
+// ============================================
+// FUNZIONE DI ATTESA PER LICENSE SYSTEM
+// ============================================
+function waitForLicenseSystem(callback, maxAttempts = 20) {
+    let attempts = 0;
+    console.log(`🔍 [Attesa] Ricerca di window.BudgetWiseLicense...`);
 
+    const checkInterval = setInterval(() => {
+        attempts++;
+        
+        if (typeof window.BudgetWiseLicense !== 'undefined' && window.BudgetWiseLicense) {
+            clearInterval(checkInterval);
+            console.log(`✅ [Trovato] License system disponibile dopo ${attempts} tentativi.`);
+            callback(window.BudgetWiseLicense);
+        } 
+        else if (attempts >= maxAttempts) {
+            clearInterval(checkInterval);
+            console.warn(`⚠️ [Non Trovato] License system non disponibile dopo ${maxAttempts} tentativi. Procedo con fallback.`);
+            callback(null);
+        }
+    }, 100);
+}
 
 // ============================================
 // CSV AUTO-DETECT (delimiter + header row) + safe splitting
@@ -998,10 +1019,14 @@ class BudgetWise {
     }
 
     init() {
-        // ========== INIZIALIZZAZIONE SISTEMA LICENZE ==========
-        this.initializeLicenseSystem();
-        
-        this.loadData();
+    // ========== CARICAMENTO DATI ==========
+    this.loadData();
+    
+    // ========== INIZIALIZZAZIONE SISTEMA LICENZE (ASINCRONA) ==========
+    this.initializeLicenseSystem();
+    
+    // ========== SETUP UI (indipendente dalla licenza) ==========
+    this.setupEventListeners();
         this.setupEventListeners();
         this.applyTheme();
         // NOTE: custom colors should NOT override theme defaults unless the user explicitly saved them.
